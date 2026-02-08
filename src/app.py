@@ -8,6 +8,11 @@ for extracurricular activities at Mergington High School.
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
+from typing import Optional
+import json
+import uuid
+from datetime import datetime
 import os
 from pathlib import Path
 
@@ -130,3 +135,66 @@ def unregister_from_activity(activity_name: str, email: str):
     # Remove student
     activity["participants"].remove(email)
     return {"message": f"Unregistered {email} from {activity_name}"}
+
+
+# --- Activity Plans Persistence Endpoints ---
+
+
+class PlanCreate(BaseModel):
+    title: str
+    content: str
+    notes: Optional[str] = None
+
+
+def _plans_dir() -> Path:
+    p = current_dir / "data" / "plans"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+@app.post("/plans")
+def create_plan(plan: PlanCreate):
+    """Create and persist a plan (Markdown content)."""
+    plans_dir = _plans_dir()
+    uid = datetime.utcnow().strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:8]
+    md_path = plans_dir / f"{uid}.md"
+    meta_path = plans_dir / f"{uid}.json"
+
+    meta = {
+        "title": plan.title,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "notes": plan.notes or "",
+    }
+
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(plan.content)
+
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f)
+
+    return {"message": "Plan saved", "id": uid, "meta": meta}
+
+
+@app.get("/plans")
+def list_plans():
+    plans_dir = _plans_dir()
+    items = []
+    for meta_file in sorted(plans_dir.glob("*.json"), reverse=True):
+        try:
+            with open(meta_file, "r", encoding="utf-8") as f:
+                m = json.load(f)
+            items.append({"id": meta_file.stem, **m})
+        except Exception:
+            continue
+    return items
+
+
+@app.get("/plans/{plan_id}")
+def get_plan(plan_id: str):
+    plans_dir = _plans_dir()
+    md_path = plans_dir / f"{plan_id}.md"
+    if not md_path.exists():
+        raise HTTPException(status_code=404, detail="Plan not found")
+    with open(md_path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return {"id": plan_id, "content": content}
